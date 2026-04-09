@@ -1,9 +1,10 @@
+"""Validation rules for Corvail Invoices extractions."""
 from __future__ import annotations
 
 import datetime as dt
 from typing import List, Optional, Tuple
 
-from src.core import ValidationError
+from src.core.config import Settings
 from src.models import InvoiceData, MathError, ProcessingStatus
 
 
@@ -29,18 +30,18 @@ def _approx_equal(expected: float, actual: float, tolerance: float = 0.01) -> bo
     return abs(expected - actual) / max(abs(expected), 1e-9) <= tolerance
 
 
-def validate_invoice(invoice: InvoiceData) -> Tuple[ProcessingStatus, List[str]]:
+def validate_invoice(invoice: InvoiceData, settings: Settings) -> Tuple[ProcessingStatus, List[str], Optional[str]]:
     """Validate invoice fields and populate math discrepancies."""
     warnings: List[str] = []
     if not invoice.invoice_number:
-        raise ValidationError(message='Missing invoice_number')
+        return ProcessingStatus.REJECTED, warnings, 'Missing invoice_number'
     if invoice.total_amount is None:
-        raise ValidationError(message='Missing total_amount')
+        return ProcessingStatus.REJECTED, warnings, 'Missing total_amount'
     if not invoice.vendor or not invoice.vendor.name:
-        raise ValidationError(message='Missing vendor.name')
-    if invoice.confidence_score < 0.5:
-        raise ValidationError(message='Low confidence extraction')
-    if 0.5 <= invoice.confidence_score < 0.7:
+        return ProcessingStatus.REJECTED, warnings, 'Missing vendor.name'
+    if invoice.confidence_score < settings.confidence_reject_threshold:
+        return ProcessingStatus.REJECTED, warnings, 'Low confidence extraction'
+    if invoice.confidence_score < settings.confidence_warn_threshold:
         warnings.append('Low confidence — manual review recommended')
     math_errors: List[MathError] = []
     line_total_sum = 0.0
@@ -72,4 +73,6 @@ def validate_invoice(invoice: InvoiceData) -> Tuple[ProcessingStatus, List[str]]
         warnings.append('Invoice is overdue')
     if invoice.balance_due is not None and invoice.amount_paid is not None and float(invoice.balance_due) > 0 and float(invoice.amount_paid) > 0:
         warnings.append('Partial payment recorded')
-    return (ProcessingStatus.WARNING if warnings else ProcessingStatus.SUCCESS, warnings)
+    if warnings:
+        return ProcessingStatus.WARNING, warnings, None
+    return ProcessingStatus.SUCCESS, warnings, None

@@ -1,3 +1,4 @@
+"""Runtime configuration for the Corvail Invoices API."""
 from __future__ import annotations
 
 from functools import lru_cache
@@ -15,17 +16,24 @@ class Settings(BaseSettings):
     erp_webhook_url: Optional[str] = None
     max_upload_bytes: int = 20 * 1024 * 1024
     sendgrid_inbound_open: bool = False
+    sendgrid_webhook_key: Optional[str] = None
     slack_webhook_url: Optional[str] = None
     sendgrid_api_key: Optional[str] = None
     alert_email_from: Optional[str] = None
     alert_email_to: Optional[str] = None
     environment: str = 'production'
     log_level: str = 'INFO'
+    confidence_reject_threshold: float = 0.5
+    confidence_warn_threshold: float = 0.7
 
-    model_config = SettingsConfigDict(env_file='.env', case_sensitive=False)
+    model_config = SettingsConfigDict(env_file='.env', case_sensitive=False, extra='ignore')
 
 
 @lru_cache
 def get_settings() -> Settings:
-    """Return cached settings."""
+    """Return cached settings.
+
+    Returns:
+        The cached settings instance.
+    """
     return Settings()

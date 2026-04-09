@@ -1,4 +1,3 @@
-from typing import Optional
-from .routes import router
+"""API package for Corvail Invoices."""
 
-__all__ = ["router"]
+__all__: list[str] = []

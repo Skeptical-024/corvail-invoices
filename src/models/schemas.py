@@ -1,7 +1,8 @@
+"""Pydantic schemas for the Corvail Invoices API."""
 from __future__ import annotations
 
 from enum import Enum
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -83,14 +84,16 @@ class InvoiceData(BaseModel):
 
 
 class InvoiceResponse(BaseModel):
-    """Represent the successful invoices API response envelope."""
+    """Represent the invoices API response envelope."""
 
     status: ProcessingStatus
     product: str = 'corvail-invoices'
     version: str = '1.0.0'
     invoice: Optional[InvoiceData] = None
-    processing_time_ms: float
+    processing_time_ms: float = 0.0
     sender_email: Optional[str] = None
     error: Optional[str] = None
     warnings: List[str] = Field(default_factory=list)
-    timestamp: str
+    timestamp: str = ''
+    request_id: Optional[str] = None
+    pipeline_timings: Optional[Dict[str, float]] = None
