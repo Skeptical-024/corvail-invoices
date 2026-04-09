@@ -1,6 +1,7 @@
-import json
+from __future__ import annotations
+
 import logging
-import time
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -8,109 +9,43 @@ from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
 
 from src.core.config import Settings
+from src.middleware.request_id import get_request_id
 
-logger = logging.getLogger("corvail.invoices.alerts")
-
-
-def _slack_color(level: str) -> str:
-    return "#F97316" if level == "warning" else "#EF4444"
+logger = logging.getLogger(__name__)
 
 
-def _build_slack_payload(
-    error_type: str,
-    message: str,
-    sender_email: Optional[str],
-    invoice_number: Optional[str],
-    level: str,
-) -> dict:
-    return {
-        "attachments": [
-            {
-                "color": _slack_color(level),
-                "blocks": [
-                    {
-                        "type": "section",
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": f"*Corvail Invoices* — {error_type}",
-                        },
-                    },
-                    {
-                        "type": "section",
-                        "fields": [
-                            {"type": "mrkdwn", "text": f"*Sender*\n{sender_email or 'unknown'}"},
-                            {"type": "mrkdwn", "text": f"*Invoice*\n{invoice_number or 'unknown'}"},
-                            {"type": "mrkdwn", "text": f"*Timestamp*\n{time.strftime('%Y-%m-%d %H:%M:%S')}"},
-                        ],
-                    },
-                    {"type": "section", "text": {"type": "mrkdwn", "text": f"*Error*\n{message}"}},
-                ],
-            }
-        ]
-    }
-
-
-async def send_slack_alert(
-    settings: Settings,
-    error_type: str,
-    message: str,
-    sender_email: Optional[str],
-    invoice_number: Optional[str],
-    level: str = "error",
-) -> None:
+async def send_slack_alert(settings: Settings, error_type: str, message: str, sender_email: Optional[str], invoice_number: Optional[str]) -> None:
+    """Send a Slack alert when configured."""
     if not settings.slack_webhook_url:
         return
-
-    payload = _build_slack_payload(error_type, message, sender_email, invoice_number, level)
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
-            resp = await client.post(settings.slack_webhook_url, json=payload)
-        logger.info("slack_alert status=%s", resp.status_code)
-    except Exception as exc:
-        logger.warning("slack_alert_failed error=%s", exc, exc_info=True)
-
-
-def send_email_alert(
-    settings: Settings,
-    error_type: str,
-    message: str,
-    sender_email: Optional[str],
-    invoice_number: Optional[str],
-) -> None:
-    if not settings.sendgrid_api_key or not settings.alert_email_from or not settings.alert_email_to:
-        return
-
-    subject = f"[Corvail Invoices] Processing Failed — {error_type}"
-    body = {
-        "product": "corvail-invoices",
-        "error_type": error_type,
-        "message": message,
-        "sender_email": sender_email,
-        "invoice_number": invoice_number,
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+    payload = {
+        'text': f'Corvail Invoices failure\nrequest_id={get_request_id()}\nerror_type={error_type}\nmessage={message}\nsender={sender_email or "unknown"}\ninvoice={invoice_number or "unknown"}\ntime={datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}'
     }
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            await client.post(settings.slack_webhook_url, json=payload)
+    except Exception:
+        logger.exception('[corvail-invoices] alert_slack_failed | request_id=%s', get_request_id())
 
-    mail = Mail(
-        from_email=settings.alert_email_from,
-        to_emails=settings.alert_email_to,
-        subject=subject,
-        plain_text_content=json.dumps(body, indent=2),
-    )
+
+def send_email_alert(settings: Settings, error_type: str, message: str, sender_email: Optional[str], invoice_number: Optional[str]) -> None:
+    """Send a SendGrid alert email when configured."""
+    if not all([settings.sendgrid_api_key, settings.alert_email_from, settings.alert_email_to]):
+        return
     try:
         client = SendGridAPIClient(settings.sendgrid_api_key)
-        response = client.send(mail)
-        logger.info("sendgrid_alert status=%s", response.status_code)
-    except Exception as exc:
-        logger.warning("sendgrid_alert_failed error=%s", exc, exc_info=True)
+        mail = Mail(
+            from_email=settings.alert_email_from,
+            to_emails=settings.alert_email_to,
+            subject='[Corvail Invoices] Processing failure',
+            plain_text_content=f'request_id={get_request_id()}\nerror_type={error_type}\nmessage={message}\nsender={sender_email or "unknown"}\ninvoice={invoice_number or "unknown"}',
+        )
+        client.send(mail)
+    except Exception:
+        logger.exception('[corvail-invoices] alert_email_failed | request_id=%s', get_request_id())
 
 
-async def fire_alerts(
-    settings: Settings,
-    error_type: str,
-    message: str,
-    sender_email: Optional[str],
-    invoice_number: Optional[str],
-    level: str = "error",
-) -> None:
-    await send_slack_alert(settings, error_type, message, sender_email, invoice_number, level)
+async def fire_alerts(settings: Settings, error_type: str, message: str, sender_email: Optional[str], invoice_number: Optional[str]) -> None:
+    """Dispatch configured alerts for invoice failures."""
+    await send_slack_alert(settings, error_type, message, sender_email, invoice_number)
     send_email_alert(settings, error_type, message, sender_email, invoice_number)

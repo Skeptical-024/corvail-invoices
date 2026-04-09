@@ -1,16 +1,22 @@
+from __future__ import annotations
+
 from enum import Enum
 from typing import List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ProcessingStatus(str, Enum):
-    SUCCESS = "success"
-    WARNING = "warning"
-    REJECTED = "rejected"
+    """Enumerate invoice processing states."""
+
+    SUCCESS = 'STATUS_SUCCESS'
+    WARNING = 'STATUS_WARNING'
+    REJECTED = 'STATUS_REJECTED'
 
 
 class LineItem(BaseModel):
+    """Represent an extracted invoice line item."""
+
     description: Optional[str] = None
     quantity: Optional[float] = None
     unit_price: Optional[float] = None
@@ -20,14 +26,18 @@ class LineItem(BaseModel):
 
 
 class MathError(BaseModel):
+    """Represent a deterministic invoice math discrepancy."""
+
     field: str
     expected: float
     actual: float
     delta: float
-    severity: str  # "warning" or "error"
+    severity: str
 
 
 class VendorInfo(BaseModel):
+    """Represent supplier identity fields."""
+
     name: Optional[str] = None
     address: Optional[str] = None
     email: Optional[str] = None
@@ -37,20 +47,24 @@ class VendorInfo(BaseModel):
 
 
 class BillToInfo(BaseModel):
+    """Represent bill-to identity fields."""
+
     name: Optional[str] = None
     address: Optional[str] = None
     contact: Optional[str] = None
 
 
 class InvoiceData(BaseModel):
+    """Represent the structured invoice payload."""
+
     invoice_number: Optional[str] = None
     invoice_date: Optional[str] = None
     due_date: Optional[str] = None
     po_number: Optional[str] = None
     reference_number: Optional[str] = None
-    vendor: VendorInfo
-    bill_to: BillToInfo
-    line_items: List[LineItem]
+    vendor: VendorInfo = Field(default_factory=VendorInfo)
+    bill_to: BillToInfo = Field(default_factory=BillToInfo)
+    line_items: List[LineItem] = Field(default_factory=list)
     subtotal: Optional[float] = None
     discount_amount: Optional[float] = None
     discount_percent: Optional[float] = None
@@ -64,17 +78,19 @@ class InvoiceData(BaseModel):
     payment_terms: Optional[str] = None
     payment_method: Optional[str] = None
     notes: Optional[str] = None
-    math_errors: List[MathError]
-    confidence_score: float
+    math_errors: List[MathError] = Field(default_factory=list)
+    confidence_score: float = 0.0
 
 
 class InvoiceResponse(BaseModel):
+    """Represent the successful invoices API response envelope."""
+
     status: ProcessingStatus
-    product: str = "corvail-invoices"
-    version: str = "1.0.0"
+    product: str = 'corvail-invoices'
+    version: str = '1.0.0'
     invoice: Optional[InvoiceData] = None
     processing_time_ms: float
     sender_email: Optional[str] = None
     error: Optional[str] = None
-    warnings: List[str]
+    warnings: List[str] = Field(default_factory=list)
     timestamp: str

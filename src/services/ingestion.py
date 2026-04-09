@@ -1,5 +1,6 @@
+from __future__ import annotations
+
 import io
-import logging
 from typing import Optional, Tuple
 
 from fastapi import UploadFile
@@ -8,93 +9,54 @@ from starlette.datastructures import FormData
 from src.core import IngestionError
 from src.core.config import Settings
 
-logger = logging.getLogger("corvail.invoices.ingestion")
-
-PDF_MAGIC = b"%PDF"
-
-
-def _log_form_fields(form: FormData) -> None:
-    for key, value in form.multi_items():
-        if isinstance(value, UploadFile):
-            logger.info(
-                "sendgrid_field file=%s filename=%s content_type=%s",
-                key,
-                value.filename,
-                value.content_type,
-            )
-        else:
-            logger.info("sendgrid_field key=%s value=%s", key, value)
+PDF_MAGIC = b'%PDF'
 
 
 def _is_pdf_file(upload: UploadFile) -> bool:
-    if upload.content_type and "pdf" in upload.content_type.lower():
-        return True
-    if upload.filename and upload.filename.lower().endswith(".pdf"):
-        return True
-    return False
+    """Return whether an upload looks like a PDF."""
+    return bool((upload.content_type and 'pdf' in upload.content_type.lower()) or (upload.filename and upload.filename.lower().endswith('.pdf')))
 
 
-def _validate_pdf_bytes(data: bytes, settings: Settings) -> None:
-    if len(data) > settings.max_upload_bytes:
-        raise IngestionError(f"PDF exceeds max upload size of {settings.max_upload_bytes} bytes")
-    if not data.startswith(PDF_MAGIC):
-        raise IngestionError("Uploaded file is not a valid PDF")
-
-
-def _to_bytesio(data: bytes) -> io.BytesIO:
-    buf = io.BytesIO()
-    buf.write(data)
-    buf.seek(0)
-    return buf
-
-
-def _wipe_bytes(data: bytearray) -> None:
-    for i in range(len(data)):
-        data[i] = 0
+def validate_pdf_buffer(buffer: io.BytesIO, settings: Settings) -> None:
+    """Validate PDF size and magic bytes."""
+    view = buffer.getvalue()
+    if len(view) > settings.max_upload_bytes:
+        raise IngestionError(message=f'PDF exceeds max upload size of {settings.max_upload_bytes} bytes')
+    prefix = buffer.read(4)
+    buffer.seek(0)
+    if prefix != PDF_MAGIC:
+        raise IngestionError(message='Invalid file type — PDF required', error_code='INVALID_FILE_TYPE', status_code=415)
 
 
 async def ingest_from_sendgrid(form: FormData, settings: Settings) -> Tuple[io.BytesIO, Optional[str]]:
-    _log_form_fields(form)
-    sender = form.get("from") or form.get("sender")
-
-    candidate_files: list[UploadFile] = []
+    """Extract the first PDF attachment from a SendGrid form payload."""
+    sender = form.get('from') or form.get('sender')
     for _, value in form.multi_items():
         if isinstance(value, UploadFile) and _is_pdf_file(value):
-            candidate_files.append(value)
-
-    if not candidate_files:
-        raise IngestionError("No PDF attachment found in SendGrid payload")
-
-    file = candidate_files[0]
-    data = await file.read()
-    data_bytes = bytearray(data)
-    _validate_pdf_bytes(data, settings)
-    buf = _to_bytesio(data)
-    _wipe_bytes(data_bytes)
-    return buf, sender
+            data = await value.read()
+            buffer = io.BytesIO(data)
+            validate_pdf_buffer(buffer, settings)
+            return buffer, sender
+    raise IngestionError(message='No PDF attachment found in SendGrid payload')
 
 
 async def ingest_from_upload(file: UploadFile, settings: Settings) -> Tuple[io.BytesIO, Optional[str]]:
+    """Read a direct upload into an in-memory PDF buffer."""
     if not _is_pdf_file(file):
-        raise IngestionError("Uploaded file must be a PDF")
-
+        raise IngestionError(message='Uploaded file must be a PDF', error_code='INVALID_FILE_TYPE', status_code=415)
     data = await file.read()
-    data_bytes = bytearray(data)
-    _validate_pdf_bytes(data, settings)
-    buf = _to_bytesio(data)
-    _wipe_bytes(data_bytes)
-    return buf, None
+    buffer = io.BytesIO(data)
+    validate_pdf_buffer(buffer, settings)
+    return buffer, None
 
 
-def wipe_bytesio(buf: io.BytesIO) -> None:
+def wipe_bytesio(buf: io.BytesIO | None) -> None:
+    """Overwrite and close an in-memory buffer."""
+    if buf is None:
+        return
     try:
         view = buf.getbuffer()
-        view[:] = b"\x00" * len(view)
+        view[:] = b'\x00' * len(view)
         view.release()
-    except Exception:
-        logger.warning("Failed to wipe buffer", exc_info=True)
     finally:
-        try:
-            buf.close()
-        except Exception:
-            logger.warning("Failed to close buffer", exc_info=True)
+        buf.close()

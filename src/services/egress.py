@@ -1,51 +1,47 @@
-from typing import Optional
+from __future__ import annotations
+
 import logging
-import time
+from typing import Optional
 
 import httpx
 
 from src.core.config import Settings
+from src.core.exceptions import EgressError
+from src.middleware.request_id import get_request_id
 from src.models import InvoiceResponse
 
-logger = logging.getLogger("corvail.invoices.egress")
+logger = logging.getLogger(__name__)
+_client: Optional[httpx.AsyncClient] = None
+
+
+async def startup_http_client() -> None:
+    """Create the shared outbound HTTP client."""
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(timeout=15.0, limits=httpx.Limits(max_connections=10))
+
+
+async def shutdown_http_client() -> None:
+    """Close the shared outbound HTTP client."""
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None
+
+
+def get_http_client() -> httpx.AsyncClient:
+    """Return the shared outbound HTTP client."""
+    if _client is None:
+        raise RuntimeError('HTTP client not initialised')
+    return _client
 
 
 async def deliver_to_erp(payload: InvoiceResponse, settings: Settings) -> None:
+    """POST successful invoice payloads to the configured webhook."""
     if not settings.erp_webhook_url:
-        logger.warning("ERP webhook URL not configured; skipping delivery")
         return
-
-    headers = {
-        "Content-Type": "application/json",
-        "X-Source": "corvail-invoices-api",
-        "X-Invoice-Number": payload.invoice.invoice_number if payload.invoice else "",
-        "X-Vendor": payload.invoice.vendor.name if payload.invoice and payload.invoice.vendor else "",
-        "X-Total": str(payload.invoice.total_amount) if payload.invoice else "",
-        "X-Currency": payload.invoice.currency if payload.invoice else "",
-    }
-
-    timeout = httpx.Timeout(15.0)
-    for attempt in range(1, 3):
-        start = time.monotonic()
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(
-                    settings.erp_webhook_url,
-                    json=payload.model_dump(),
-                    headers=headers,
-                )
-            duration = (time.monotonic() - start) * 1000
-            logger.info(
-                "erp_delivery status=%s duration_ms=%.2f",
-                response.status_code,
-                duration,
-            )
-            return
-        except httpx.TimeoutException as exc:
-            duration = (time.monotonic() - start) * 1000
-            logger.warning("erp_timeout attempt=%s duration_ms=%.2f error=%s", attempt, duration, exc)
-            if attempt == 2:
-                return
-        except Exception as exc:
-            logger.error("erp_delivery_failed error=%s", exc, exc_info=True)
-            return
+    client = get_http_client()
+    response = await client.post(settings.erp_webhook_url, json=payload.model_dump(mode='json'), headers={'X-Source': 'corvail-invoices-api', 'X-Request-ID': get_request_id()})
+    if response.is_error:
+        raise EgressError(message='ERP delivery failed')
+    logger.info('[corvail-invoices] egress_ok | request_id=%s', get_request_id())
